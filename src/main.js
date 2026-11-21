@@ -4,7 +4,7 @@ import { StateField, StateEffect, Compartment } from "@codemirror/state";
 import { EditorView, Decoration, WidgetType, ViewPlugin } from "@codemirror/view";
 import { validateMany, SCHEMA_INFO } from "./validate.js";
 import { formatIssue } from "./messages.js";
-import { extractBlocks, isYamlLang } from "./blocks.js";
+import { extractBlocks, isYamlLang, toDoc, toDocLine, docFix } from "./blocks.js";
 import { applyFixes, fixable } from "./fixes.js";
 
 const STRINGS = {
@@ -179,15 +179,13 @@ function fixLabel(fix) {
 }
 
 function fixInView(cm, items) {
-  const sorted = items.slice().sort((a, b) => a.base + a.fix.from - (b.base + b.fix.from) || a.fix.to - b.fix.to);
+  const doc = cm.state.doc.toString();
+  const sorted = items.map(({ block, fix }) => docFix(block, fix, doc)).filter(Boolean).sort((a, b) => a.from - b.from || a.to - b.to);
   const changes = [];
   let last = -1;
-  for (const { base, fix } of sorted) {
-    const from = base + fix.from;
-    const to = base + fix.to;
-    if (from < last || to > cm.state.doc.length) continue;
-    if (cm.state.sliceDoc(from, to) !== fix.expect) continue;
-    changes.push({ from, to, insert: fix.insert });
+  for (const { from, to, insert } of sorted) {
+    if (from < last) continue;
+    changes.push({ from, to, insert });
     last = Math.max(to, from + 1);
   }
   if (!changes.length) {
@@ -250,12 +248,12 @@ class SummaryWidget extends WidgetType {
     const el = document.createElement("div");
     el.className = "ek-widget";
     el.setAttribute("contenteditable", "false");
-    const base = this.block.from;
+    const block = this.block;
     this.plugin.renderSummary(el, this.block.res, {
       lineOffset: this.block.firstLine,
-      onFix: (fixes) => fixInView(view, fixes.map((fix) => ({ base, fix }))),
+      onFix: (fixes) => fixInView(view, fixes.map((fix) => ({ block, fix }))),
       onJump: (issue) => {
-        const pos = Math.min(this.block.from + issue.from, view.state.doc.length);
+        const pos = Math.min(toDoc(block, issue.from), view.state.doc.length);
         view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
         view.focus();
       },
@@ -328,7 +326,10 @@ class KubePanel extends ItemView {
         lineOffset: b.firstLine,
         expand: true,
         onFix: (fixes) => this.plugin.fixInTarget(target, mode, b, fixes),
-        onJump: (issue) => this.plugin.jumpTo(target, b.firstLine + issue.line - 1, issue.col - 1),
+        onJump: (issue) => {
+          const p = toDocLine(b, issue.line, issue.col);
+          this.plugin.jumpTo(target, p.line, p.ch);
+        },
       });
     }
   }
@@ -340,7 +341,7 @@ class KubePanel extends ItemView {
     const rows = [];
     for (const f of files) {
       const text = await this.plugin.app.vault.cachedRead(f);
-      if (f.extension === "md" && !/^\s{0,3}(```|~~~)\s*(ya?ml|k8s|kubernetes)\b/im.test(text)) continue;
+      if (f.extension === "md" && !/^[ \t>]*(```|~~~)\s*(ya?ml|k8s|kubernetes)\b/im.test(text)) continue;
       const blocks = this.plugin.analyze(text, f.extension === "md" ? "markdown" : "yaml", false);
       if (!blocks.length) continue;
       const c = countLevels(blocks.flatMap((b) => b.res.issues));
@@ -487,7 +488,7 @@ export default class EcuKube extends Plugin {
           item
             .setTitle(fixLabel(hit.issue.fix))
             .setIcon("wand")
-            .onClick(() => fixInView(editor.cm, [{ base: hit.block.from, fix: hit.issue.fix }]))
+            .onClick(() => fixInView(editor.cm, [{ block: hit.block, fix: hit.issue.fix }]))
         );
       })
     );
@@ -555,14 +556,14 @@ export default class EcuKube extends Plugin {
       if (!s.underline && !(s.summary && mode === "markdown")) return Decoration.none;
       if (mode === "yaml" && !s.yamlFiles) return Decoration.none;
       const text = state.doc.toString();
-      if (mode === "markdown" && !/^\s{0,3}(```|~~~)\s*(ya?ml|k8s|kubernetes)\b/im.test(text)) return Decoration.none;
+      if (mode === "markdown" && !/^[ \t>]*(```|~~~)\s*(ya?ml|k8s|kubernetes)\b/im.test(text)) return Decoration.none;
       const len = state.doc.length;
       const ranges = [];
       for (const b of plugin.analyze(text, mode, false)) {
         if (s.underline)
           for (const i of b.res.issues) {
-            const from = Math.min(b.from + i.from, len);
-            let to = Math.min(b.from + i.to, len);
+            const from = Math.min(toDoc(b, i.from), len);
+            let to = Math.min(toDoc(b, i.to), len);
             const line = state.doc.lineAt(from);
             if (to > line.to) to = line.to;
             const msg = formatIssue(i, uiLang);
@@ -707,8 +708,8 @@ export default class EcuKube extends Plugin {
     if (!cm || !this.settings.underline) return null;
     const pos = cm.state.selection.main.head;
     for (const block of this.analyze(cm.state.doc.toString(), "markdown", false)) {
-      if (pos < block.from || pos > block.from + block.text.length) continue;
-      const issue = block.res.issues.find((i) => i.fix && i.fix.kind !== "tabs" && pos >= block.from + i.from && pos <= block.from + i.to);
+      if (pos < block.from || pos > toDoc(block, block.text.length)) continue;
+      const issue = block.res.issues.find((i) => i.fix && i.fix.kind !== "tabs" && pos >= toDoc(block, i.from) && pos <= toDoc(block, i.to));
       if (issue) return { block, issue };
       const tabs = block.res.issues.find((i) => i.fix && i.fix.kind === "tabs");
       if (tabs) return { block, issue: tabs };
@@ -719,14 +720,14 @@ export default class EcuKube extends Plugin {
   fixAtCursor(editor) {
     const hit = this.issueAtCursor(editor);
     if (!hit) return new Notice(t("fix.none"));
-    fixInView(editor.cm, [{ base: hit.block.from, fix: hit.issue.fix }]);
+    fixInView(editor.cm, [{ block: hit.block, fix: hit.issue.fix }]);
   }
 
   fixAllInEditor(editor) {
     const cm = editor && editor.cm;
     if (!cm) return;
     const items = [];
-    for (const b of this.analyze(cm.state.doc.toString(), "markdown", false)) for (const i of fixable(b.res.issues)) items.push({ base: b.from, fix: i.fix });
+    for (const b of this.analyze(cm.state.doc.toString(), "markdown", false)) for (const i of fixable(b.res.issues)) items.push({ block: b, fix: i.fix });
     if (!items.length) return new Notice(t("fix.none"));
     const n = fixInView(cm, items);
     if (n) new Notice(t("fix.done", { n }));
@@ -741,23 +742,21 @@ export default class EcuKube extends Plugin {
 
   fixInTarget(target, mode, block, fixes) {
     const cm = this.editorViewOf(target);
-    if (cm) return fixInView(cm, fixes.map((fix) => ({ base: block.from, fix })));
+    if (cm) return fixInView(cm, fixes.map((fix) => ({ block, fix })));
     return this.fixInFile(target.file, mode, block.text, fixes);
   }
 
   async fixInFile(file, mode, blockText, fixes) {
     let applied = 0;
     await this.app.vault.process(file, (data) => {
-      let base = 0;
+      let block = { from: 0 };
       if (mode === "markdown") {
-        const b = extractBlocks(data).find((x) => x.text === blockText);
-        if (!b) return data;
-        base = b.from;
+        block = extractBlocks(data).find((x) => x.text === blockText);
+        if (!block) return data;
       } else if (data !== blockText) return data;
-      const slice = data.slice(base, base + blockText.length);
-      const r = applyFixes(slice, fixes);
+      const r = applyFixes(data, fixes.map((fix) => docFix(block, fix, data)));
       applied = r.applied;
-      return data.slice(0, base) + r.text + data.slice(base + blockText.length);
+      return r.text;
     });
     if (!applied) new Notice(t("fix.stale"));
     return applied;
@@ -848,7 +847,7 @@ export default class EcuKube extends Plugin {
     if (!target) return el.hide();
     const text = await this.fileText(target);
     const mode = YAML_EXTS.has(target.file.extension) ? "yaml" : "markdown";
-    if (mode === "markdown" && !/^\s{0,3}(```|~~~)\s*(ya?ml|k8s|kubernetes)\b/im.test(text)) return el.hide();
+    if (mode === "markdown" && !/^[ \t>]*(```|~~~)\s*(ya?ml|k8s|kubernetes)\b/im.test(text)) return el.hide();
     const blocks = this.analyze(text, mode, false);
     if (!blocks.length) return el.hide();
     el.show();
