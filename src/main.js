@@ -68,6 +68,8 @@ const STRINGS = {
     "set.hintsDesc": "Also mention untagged or :latest images, containers without resources, unused volumes and similar.",
     "set.status": "Status bar",
     "set.statusDesc": "Show the result for the current file in the status bar.",
+    "set.ribbon": "Ribbon icon",
+    "set.ribbonDesc": "Show an icon in the ribbon that opens the Kubernetes check panel. Useful on mobile, where there is no status bar.",
     "set.files": "Check .yaml / .yml files",
     "set.filesDesc": "Underline problems in YAML files opened with ecu-codekit, and include them in the panel.",
     "set.about": "About the checks",
@@ -133,6 +135,8 @@ const STRINGS = {
     "set.hintsDesc": "Etiketsiz ya da :latest image, resources tanımlanmamış konteyner, kullanılmayan volume gibi durumları da belirt.",
     "set.status": "Durum çubuğu",
     "set.statusDesc": "Geçerli dosyanın sonucunu durum çubuğunda göster.",
+    "set.ribbon": "Şerit simgesi",
+    "set.ribbonDesc": "Kubernetes kontrol panelini açan bir simgeyi şeritte göster. Durum çubuğu olmayan mobilde işe yarar.",
     "set.files": ".yaml / .yml dosyalarını kontrol et",
     "set.filesDesc": "ecu-codekit ile açılan YAML dosyalarında sorunların altını çiz ve onları panele dahil et.",
     "set.about": "Kontroller hakkında",
@@ -163,8 +167,40 @@ function setUiLang(pref) {
 const VIEW_PANEL = "ecu-kube-panel";
 const CODEKIT_VIEW = "ecu-codekit-file";
 const YAML_EXTS = new Set(["yaml", "yml"]);
-const DEFAULTS = { uiLang: "auto", underline: true, summary: true, hints: true, statusBar: true, yamlFiles: true };
+const DEFAULTS = { uiLang: "auto", underline: true, summary: true, hints: true, statusBar: true, ribbon: true, yamlFiles: true };
 const LEVEL_ICON = { error: "circle-x", warning: "triangle-alert", hint: "lightbulb" };
+const ICON_FALLBACKS = {
+  "circle-x": ["x-circle"],
+  "triangle-alert": ["alert-triangle"],
+  "circle-check": ["check-circle"],
+  "ship-wheel": ["anchor"],
+  "folder-search": ["search"],
+  wand: ["wand-2", "wand-sparkles", "sparkles"],
+  lightbulb: ["lamp"],
+  braces: ["curly-braces", "code"],
+  "refresh-cw": ["rotate-cw"],
+  "arrow-left": ["chevron-left"],
+};
+const iconCache = new Map();
+function iconName(name) {
+  if (iconCache.has(name)) return iconCache.get(name);
+  let pick = name;
+  if (typeof obsidian.getIcon === "function") {
+    const found = [name].concat(ICON_FALLBACKS[name] || []).find((n) => {
+      try {
+        return !!obsidian.getIcon(n);
+      } catch (e) {
+        return false;
+      }
+    });
+    if (found) pick = found;
+  }
+  iconCache.set(name, pick);
+  return pick;
+}
+function icon(el, name) {
+  setIcon(el, iconName(name));
+}
 const REVERSE = new Set(["exposedBy", "routedBy", "scaledBy"]);
 
 const refreshEffect = StateEffect.define();
@@ -245,9 +281,7 @@ class SummaryWidget extends WidgetType {
     return o.sig === this.sig;
   }
   toDOM(view) {
-    const el = document.createElement("div");
-    el.className = "ek-widget";
-    el.setAttribute("contenteditable", "false");
+    const el = view.dom.win.createDiv({ cls: "ek-widget", attr: { contenteditable: "false" } });
     const block = this.block;
     this.plugin.renderSummary(el, this.block.res, {
       lineOffset: this.block.firstLine,
@@ -279,7 +313,7 @@ class KubePanel extends ItemView {
     return t("panel.title");
   }
   getIcon() {
-    return "ship-wheel";
+    return iconName("ship-wheel");
   }
   async onOpen() {
     this.contentEl.addClass("ek-panel");
@@ -294,9 +328,9 @@ class KubePanel extends ItemView {
     const head = el.createDiv({ cls: "ek-panel-head" });
     head.createDiv({ cls: "ek-panel-title", text: t("panel.title") });
     const tools = head.createDiv({ cls: "ek-panel-tools" });
-    const btn = (icon, label, fn) => {
+    const btn = (name, label, fn) => {
       const b = tools.createDiv({ cls: "clickable-icon", attr: { "aria-label": label } });
-      setIcon(b, icon);
+      icon(b, name);
       b.addEventListener("click", fn);
     };
     if (this.mode === "scan") btn("arrow-left", t("panel.back"), () => this.showFile());
@@ -362,7 +396,7 @@ class KubePanel extends ItemView {
       const ic = row.createSpan({ cls: "ek-scan-icon" });
       const level = r.c.error ? "error" : r.c.warning ? "warning" : "ok";
       ic.addClass("ek-" + level);
-      setIcon(ic, level === "ok" ? "circle-check" : LEVEL_ICON[level]);
+      icon(ic, level === "ok" ? "circle-check" : LEVEL_ICON[level]);
       row.createSpan({ cls: "ek-scan-path", text: r.file.path });
       const counts = row.createSpan({ cls: "ek-scan-counts" });
       if (r.c.error) counts.createSpan({ cls: "ek-error", text: String(r.c.error) });
@@ -415,6 +449,7 @@ class KubeSettings extends PluginSettingTab {
     toggle("summary", "set.summary", "set.summaryDesc");
     toggle("hints", "set.hints", "set.hintsDesc");
     toggle("statusBar", "set.status", "set.statusDesc");
+    toggle("ribbon", "set.ribbon", "set.ribbonDesc");
     toggle("yamlFiles", "set.files", "set.filesDesc");
     new Setting(el).setName(t("set.about")).setHeading();
     el.createEl("p", { cls: "setting-item-description", text: t("set.aboutDesc", SCHEMA_INFO) });
@@ -460,6 +495,7 @@ export default class EcuKube extends Plugin {
     this.statusEl.addClass("ek-status", "mod-clickable");
     this.statusEl.setAttr("aria-label", t("status.tooltip"));
     this.statusEl.addEventListener("click", () => this.openPanel());
+    this.syncRibbon();
 
     this.addCommand({ id: "open-panel", name: t("cmd.panel"), callback: () => this.openPanel() });
     this.addCommand({
@@ -487,7 +523,7 @@ export default class EcuKube extends Plugin {
         menu.addItem((item) =>
           item
             .setTitle(fixLabel(hit.issue.fix))
-            .setIcon("wand")
+            .setIcon(iconName("wand"))
             .onClick(() => fixInView(editor.cm, [{ block: hit.block, fix: hit.issue.fix }]))
         );
       })
@@ -518,6 +554,7 @@ export default class EcuKube extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+    this.syncRibbon();
     this.cache.clear();
     this.refreshAll();
   }
@@ -593,8 +630,8 @@ export default class EcuKube extends Plugin {
     const level = c.error ? "error" : c.warning ? "warning" : "ok";
     const box = el.createDiv({ cls: `ek-summary ek-is-${level}` });
     const head = box.createDiv({ cls: "ek-sum-head" });
-    const icon = head.createSpan({ cls: `ek-sum-icon ek-${level === "ok" && c.hint ? "hint" : level}` });
-    setIcon(icon, res.skipped ? "braces" : level === "ok" ? "circle-check" : LEVEL_ICON[level]);
+    const ic = head.createSpan({ cls: `ek-sum-icon ek-${level === "ok" && c.hint ? "hint" : level}` });
+    icon(ic, res.skipped ? "braces" : level === "ok" ? "circle-check" : LEVEL_ICON[level]);
     const objs = head.createDiv({ cls: "ek-objs" });
     if (res.skipped) objs.createSpan({ cls: "ek-obj-facts", text: t("sum.template") });
     for (const d of res.docs.filter((x) => x.kind)) {
@@ -639,7 +676,7 @@ export default class EcuKube extends Plugin {
     for (const i of res.issues) {
       const row = list.createDiv({ cls: `ek-issue ek-issue-${i.level}` });
       const ic = row.createSpan({ cls: `ek-issue-icon ek-${i.level}`, attr: { "aria-label": t("level." + i.level) } });
-      setIcon(ic, LEVEL_ICON[i.level]);
+      icon(ic, LEVEL_ICON[i.level]);
       const msg = row.createSpan({ cls: "ek-issue-msg", text: formatIssue(i, uiLang) });
       if (i.fix && opts.onFix) {
         const b = msg.createEl("button", { cls: "ek-fix", text: fixLabel(i.fix) });
@@ -692,8 +729,7 @@ export default class EcuKube extends Plugin {
         const hit = blocks.find((b) => b.text === text);
         const res = hit ? hit.res : this.cachedValidate([text])[0];
         if (!worthShowing(res)) continue;
-        const box = document.createElement("div");
-        box.className = "ek-reading";
+        const box = pre.win.createDiv({ cls: "ek-reading" });
         this.renderSummary(box, res, {
           lineOffset: hit ? hit.firstLine : base,
           onFix: file instanceof TFile ? (fixes) => this.fixInFile(file, "markdown", text, fixes) : null,
@@ -802,6 +838,20 @@ export default class EcuKube extends Plugin {
     }
   }
 
+  syncRibbon() {
+    const title = t("cmd.panel");
+    if (this.ribbonEl && (!this.settings.ribbon || this.ribbonTitle !== title)) {
+      const ribbon = this.app.workspace.leftRibbon;
+      if (ribbon && typeof ribbon.removeRibbonAction === "function") ribbon.removeRibbonAction(this.manifest.id + ":" + this.ribbonTitle);
+      this.ribbonEl.detach();
+      this.ribbonEl = null;
+    }
+    if (this.settings.ribbon && !this.ribbonEl) {
+      this.ribbonTitle = title;
+      this.ribbonEl = this.addRibbonIcon(iconName("ship-wheel"), title, () => this.openPanel());
+    }
+  }
+
   async openPanel() {
     const ws = this.app.workspace;
     let leaf = ws.getLeavesOfType(VIEW_PANEL)[0];
@@ -854,7 +904,7 @@ export default class EcuKube extends Plugin {
     const c = countLevels(blocks.flatMap((b) => b.res.issues));
     const level = c.error ? "error" : c.warning ? "warning" : "ok";
     const ic = el.createSpan({ cls: "ek-status-icon ek-" + level });
-    setIcon(ic, level === "ok" ? "ship-wheel" : LEVEL_ICON[level]);
+    icon(ic, level === "ok" ? "ship-wheel" : LEVEL_ICON[level]);
     el.createSpan({ text: level === "ok" ? "K8s" : String(c.error || c.warning) });
   }
 
