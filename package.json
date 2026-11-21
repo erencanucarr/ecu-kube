@@ -8,7 +8,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "schema": "node scripts/gen-schema.mjs",
-    "test": "node test/run.mjs && node test/fixes.mjs"
+    "test": "node test/run.mjs && node test/fixes.mjs && node test/blocks.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.10",
