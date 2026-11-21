@@ -1,8 +1,8 @@
-import { parseAllDocuments, LineCounter, isMap, isSeq, isScalar, isAlias } from "yaml";
+import { parseAllDocuments, LineCounter, isMap, isSeq, isScalar, isAlias, visit } from "yaml";
 import SCHEMA from "./schema.json";
 
 const N = SCHEMA.n;
-export const SCHEMA_INFO = { k8s: SCHEMA.k8s, gateway: SCHEMA.gateway.replace(/^v/, ""), metallb: SCHEMA.metallb.replace(/^v/, "") };
+export const SCHEMA_INFO = { k8s: SCHEMA.k8s, gateway: SCHEMA.gateway.replace(/^v/, ""), metallb: SCHEMA.metallb.replace(/^v/, ""), certManager: SCHEMA.certManager.replace(/^v/, ""), prometheusOperator: SCHEMA.prometheusOperator.replace(/^v/, ""), argocd: SCHEMA.argocd.replace(/^v/, "") };
 
 const REMOVED = [
   ["extensions/v1beta1", "Deployment DaemonSet ReplicaSet", "1.16", "apps/v1"],
@@ -205,6 +205,7 @@ function parseInto(ctx, text, lc) {
     ctx.doc = doc;
     rootDoc = doc;
     aliasBudget = 0;
+    aliasLimit = Math.max(20000, 50 * nodeSize(doc.contents));
     if (doc.errors.length) {
       for (const e of doc.errors.slice(0, 1)) {
         const [from, to] = e.pos || [0, 0];
@@ -320,14 +321,45 @@ function b64(str) {
 }
 
 let aliasBudget = 0;
+let aliasLimit = 20000;
+const aliasTargets = new WeakMap();
+const nodeSizes = new WeakMap();
+function aliasTarget(alias) {
+  let targets = aliasTargets.get(rootDoc);
+  if (!targets) {
+    targets = new Map();
+    const anchors = new Map();
+    const depths = new Map();
+    visit(rootDoc, {
+      Node: (_k, n, path) => {
+        if (n.anchor) anchors.set(n.anchor, n);
+        if (!isAlias(n)) return;
+        const target = anchors.get(n.source);
+        const depth = target && !path.includes(target) ? (depths.get(target) || 0) + 1 : Infinity;
+        if (depth > 20) return targets.set(n, null);
+        targets.set(n, target);
+        for (const p of path) if ((depths.get(p) || 0) < depth) depths.set(p, depth);
+      },
+    });
+    aliasTargets.set(rootDoc, targets);
+  }
+  return targets.get(alias) || null;
+}
+function nodeSize(node) {
+  if (!node || typeof node !== "object") return 1;
+  let size = nodeSizes.get(node);
+  if (size) return size;
+  size = 1;
+  if (isMap(node)) for (const p of node.items) size += nodeSize(p.key) + nodeSize(p.value);
+  else if (isSeq(node)) for (const it of node.items) size += nodeSize(it);
+  nodeSizes.set(node, size);
+  return size;
+}
 function res1(node) {
   if (isAlias(node) && rootDoc) {
-    if (++aliasBudget > 1000) return null;
-    try {
-      return node.resolve(rootDoc);
-    } catch (e) {
-      return null;
-    }
+    const target = aliasTarget(node);
+    if (!target || (aliasBudget += nodeSize(target)) > aliasLimit) return null;
+    return target;
   }
   return node;
 }
@@ -355,10 +387,37 @@ function keyNode(map, key) {
 function str(node) {
   return isScalar(node) && node.value != null ? String(node.value) : null;
 }
+function setKey(out, k, v) {
+  if (k in out) Object.defineProperty(out, k, { value: v, writable: true, enumerable: true, configurable: true });
+  else out[k] = v;
+}
+function plain(node) {
+  if (!node) return null;
+  node = res1(node);
+  if (!node) throw new Error("alias");
+  if (isScalar(node)) return node.value;
+  if (isSeq(node)) return node.items.map(plain);
+  if (!isMap(node)) return null;
+  const out = {};
+  for (const p of node.items) {
+    if (isScalar(p.key) && (p.key.value === "<<" || (typeof p.key.value === "symbol" && p.key.value.description === "<<"))) {
+      const src = res1(p.value);
+      for (const m of isSeq(src) ? src.items : [src]) {
+        const merged = plain(m);
+        if (!merged || typeof merged !== "object" || Array.isArray(merged)) throw new Error("merge");
+        for (const [k, v] of Object.entries(merged)) if (!Object.prototype.hasOwnProperty.call(out, k)) setKey(out, k, v);
+      }
+      continue;
+    }
+    const k = isScalar(p.key) ? String(p.key.value ?? "") : p.key ? JSON.stringify(plain(p.key)) : "";
+    setKey(out, k, plain(p.value));
+  }
+  return out;
+}
 function js(node) {
   if (!node) return undefined;
   try {
-    return node.toJS(rootDoc, { maxAliasCount: 100 });
+    return plain(node);
   } catch (e) {
     return undefined;
   }
