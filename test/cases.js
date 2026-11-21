@@ -1,3 +1,38 @@
+const laughs = (levels, fan) => {
+  let y = `apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata: {name: widgets.example.com}
+spec:
+  group: example.com
+  names: {kind: Widget, plural: widgets}
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            l0: &l0 {type: string, enum: [a, b, c, d]}
+`;
+  for (let i = 1; i <= levels; i++) y += `            l${i}: &l${i} {type: object, properties: {${Array.from({ length: fan }, (_, k) => `p${k}: *l${i - 1}`).join(", ")}}}\n`;
+  return y + `    - name: v2\n      served: true\n      storage: false\n      schema:\n        openAPIV3Schema: *l${levels}\n`;
+};
+
+const wide = (items, refs) => {
+  let y = `apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata: {name: wide}
+spec:
+  selector: {matchLabels: {app: a}}
+  endpoints:
+    - &ep {port: web, metricRelabelings: [${Array.from({ length: items }, (_, i) => `{action: keep, sourceLabels: [l${i}]}`).join(", ")}]}
+`;
+  for (let i = 0; i < refs; i++) y += "    - *ep\n";
+  return y;
+};
+
 export default [
   ["yaml 1.1 dates and times are strings for kubectl", `apiVersion: v1
 kind: ConfigMap
@@ -214,4 +249,41 @@ kind: Service
 metadata: {name: web}
 spec:
   ports: [{port: 80}]`, ["ingress.badPort@11"]],
+  ["cert-manager certificate typo", `apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: web, namespace: default}
+spec:
+  secretName: web-tls
+  duraton: 2160h
+  renewBefore: 360h
+  dnsNames: [example.com]
+  issuerRef: {name: letsencrypt, kind: ClusterIssuer}`, ["field.typo@6"]],
+  ["prometheus operator servicemonitor", `apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: example-app
+  labels:
+    team: frontend
+spec:
+  selector:
+    matchLabels:
+      app: example-app
+  endpoints:
+  - port: web`, []],
+  ["argo cd application", `apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: guestbook
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/argoproj/argocd-example-apps.git
+    targetRevision: HEAD
+    path: guestbook
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: guestbook`, []],
+  ["alias fan-out in a crd schema", laughs(8, 4), []],
+  ["alias fan-out of a wide anchor", wide(2000, 2000), []],
 ];

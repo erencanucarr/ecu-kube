@@ -29,13 +29,15 @@ if (files.length) {
 const cases = (await import(pathToFileURL(join(process.cwd(), "test/cases.js")))).default.map(([name, yaml, expect]) => ({ name, yaml, expect }));
 let fail = 0;
 for (const c of cases) {
+  const t0 = performance.now();
   const r = validate(c.yaml);
+  const ms = performance.now() - t0;
   const got = r.issues.map((i) => `${i.code}@${i.line}`);
   const want = c.expect;
-  const ok = want.length === got.length && want.every((w) => got.includes(w));
+  const ok = want.length === got.length && want.every((w) => got.includes(w)) && ms < 1000;
   if (!ok) {
     fail++;
-    console.log(`FAIL ${c.name}\n  want ${JSON.stringify(want)}\n  got  ${JSON.stringify(got)}`);
+    console.log(`FAIL ${c.name} (${ms.toFixed(0)} ms)\n  want ${JSON.stringify(want)}\n  got  ${JSON.stringify(got)}`);
     for (const i of r.issues) console.log("     ", formatIssue(i, "en"));
   } else console.log(`ok   ${c.name}`);
 }

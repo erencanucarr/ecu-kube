@@ -6,6 +6,9 @@ import { parseAllDocuments } from "yaml";
 const K8S = "v1.37.2";
 const GATEWAY = "v1.7.0";
 const METALLB = "v0.16.2";
+const CERT_MANAGER = "v1.21.3";
+const PROMETHEUS_OPERATOR = "v0.95.2";
+const ARGOCD = "v3.6.2";
 
 const CACHE = process.env.SCHEMA_CACHE || join(tmpdir(), "ecu-kube-schema-src");
 mkdirSync(join(CACHE, "v3"), { recursive: true });
@@ -219,6 +222,9 @@ for (const spec of specs) {
 const crdSources = [
   [`https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY}/standard-install.yaml`, "gateway.yaml"],
   [`https://raw.githubusercontent.com/metallb/metallb/${METALLB}/config/manifests/metallb-native.yaml`, "metallb.yaml"],
+  [`https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER}/cert-manager.crds.yaml`, "cert-manager.yaml"],
+  [`https://github.com/prometheus-operator/prometheus-operator/releases/download/${PROMETHEUS_OPERATOR}/stripped-down-crds.yaml`, "prometheus-operator.yaml"],
+  ...["application", "applicationset", "appproject"].map((n) => [`https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD}/manifests/crds/${n}-crd.yaml`, `argocd-${n}.yaml`]),
 ];
 for (const [url, file] of crdSources) {
   for (const doc of parseAllDocuments(await fetchCached(url, file))) {
@@ -234,7 +240,7 @@ for (const [url, file] of crdSources) {
 
 for (const [k, v] of Object.entries(ENUMS)) if (v && !k.includes("[]") && !defs[k.slice(0, k.lastIndexOf("."))]) console.warn("unknown enum def", k);
 
-const out = { k8s: K8S.replace(/^v/, "").replace(/\.\d+$/, ""), gateway: GATEWAY, metallb: METALLB, kinds, n: nodes };
+const out = { k8s: K8S.replace(/^v/, "").replace(/\.\d+$/, ""), gateway: GATEWAY, metallb: METALLB, certManager: CERT_MANAGER, prometheusOperator: PROMETHEUS_OPERATOR, argocd: ARGOCD, kinds, n: nodes };
 writeFileSync("src/schema.json", JSON.stringify(out));
 const kindCount = Object.values(kinds).reduce((a, m) => a + Object.keys(m).length, 0);
 console.log(`kinds: ${kindCount}, nodes: ${nodes.length}, bytes: ${JSON.stringify(out).length}`);

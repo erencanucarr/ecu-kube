@@ -26,8 +26,9 @@ gets a short summary of what it defines.
 - Optional **best-practice hints**: untagged or `:latest` images, containers without
   resources, unused volumes.
 
-Kubernetes 1.37 built-in kinds are checked against the official API schema, plus Gateway API
-and MetalLB custom resources. Other custom resources get the basic checks. Blocks with Helm or
+Kubernetes 1.37 built-in kinds are checked against the official API schema, plus the custom
+resources of Gateway API, MetalLB, cert-manager, Prometheus Operator and Argo CD. Other custom
+resources get the basic checks. Blocks with Helm or
 Jinja templates are skipped, and placeholders like `<name>` are left alone, so half-written
 examples in your notes don't light up red. A block wrapped in `cat <<EOF | kubectl apply -f -`
 is checked as the YAML inside it.
@@ -85,7 +86,8 @@ npm run build
 ```
 
 `npm run schema` regenerates `src/schema.json` from the Kubernetes OpenAPI spec and the
-Gateway API and MetalLB CRDs (versions are pinned in `scripts/gen-schema.mjs`).
+Gateway API, MetalLB, cert-manager, Prometheus Operator and Argo CD CRDs (versions are pinned
+in `scripts/gen-schema.mjs`).
 
 ## License
 
