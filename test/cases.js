@@ -284,6 +284,25 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: guestbook`, []],
+  ["merge key from an anchored map", `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+        - &base
+          name: web
+          image: nginx:1.27
+          resources:
+            limits: {memory: 128Mi}
+        - <<: *base
+          name: sidecar`, []],
   ["alias fan-out in a crd schema", laughs(8, 4), []],
   ["alias fan-out of a wide anchor", wide(2000, 2000), []],
 ];

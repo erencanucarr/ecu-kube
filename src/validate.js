@@ -365,9 +365,25 @@ function res1(node) {
 }
 let rootDoc = null;
 
-function pairOf(map, key) {
+function keyStr(v) {
+  return typeof v === "symbol" ? v.description : String(v);
+}
+function isMerge(key) {
+  return isScalar(key) && keyStr(key.value) === "<<";
+}
+function pairOf(map, key, depth = 0) {
   if (!isMap(map)) return null;
-  return map.items.find((p) => isScalar(p.key) && String(p.key.value) === key) || null;
+  const own = map.items.find((p) => isScalar(p.key) && keyStr(p.key.value) === key && !isMerge(p.key));
+  if (own || depth > 8) return own || null;
+  for (const p of map.items) {
+    if (!isMerge(p.key)) continue;
+    const src = isAlias(p.value) && rootDoc ? aliasTarget(p.value) : p.value;
+    for (const m of isSeq(src) ? src.items : [src]) {
+      const hit = pairOf(isAlias(m) && rootDoc ? aliasTarget(m) : m, key, depth + 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
 function get(map, key) {
   const p = pairOf(map, key);
@@ -400,7 +416,7 @@ function plain(node) {
   if (!isMap(node)) return null;
   const out = {};
   for (const p of node.items) {
-    if (isScalar(p.key) && (p.key.value === "<<" || (typeof p.key.value === "symbol" && p.key.value.description === "<<"))) {
+    if (isMerge(p.key)) {
       const src = res1(p.value);
       for (const m of isSeq(src) ? src.items : [src]) {
         const merged = plain(m);
@@ -528,7 +544,7 @@ function walk(ctx, node, ref, path, keyN, top) {
     let merged = false;
     for (const pair of node.items) {
       if (!isScalar(pair.key)) continue;
-      const k = String(pair.key.value);
+      const k = keyStr(pair.key.value);
       if (k === "<<") {
         merged = true;
         continue;
@@ -559,7 +575,8 @@ function walk(ctx, node, ref, path, keyN, top) {
   if (s.t === "m") {
     if (!isMap(node)) return typeErr(ctx, node, "map", path, keyN);
     for (const pair of node.items) {
-      const k = isScalar(pair.key) ? String(pair.key.value) : "?";
+      if (isMerge(pair.key)) continue;
+      const k = isScalar(pair.key) ? keyStr(pair.key.value) : "?";
       walk(ctx, pair.value, s.i, joinPath(path, k), pair.key, false);
     }
   }
@@ -707,7 +724,7 @@ function semantic(ctx, obj) {
         const s = v.value.replace(/\s+/g, "");
         if (s && (!/^[A-Za-z0-9+/]*={0,2}$/.test(s) || s.length % 4 !== 0)) {
           const enc = b64(v.value);
-          const issue = add(ctx, "error", "secret.base64", v, { key: String(p.key.value) });
+          const issue = add(ctx, "error", "secret.base64", v, { key: keyStr(p.key.value) });
           if (enc) setFix(ctx, issue, v.range[0], v.range[1], enc, "", "base64");
         }
       }
@@ -718,7 +735,8 @@ function semantic(ctx, obj) {
     f.keys = (isMap(data) ? data.items.length : 0) + (isMap(get(m, "binaryData")) ? get(m, "binaryData").items.length : 0);
     if (isMap(data))
       for (const p of data.items) {
-        const key = isScalar(p.key) ? String(p.key.value) : "";
+        if (isMerge(p.key)) continue;
+        const key = isScalar(p.key) ? keyStr(p.key.value) : "";
         if (key && !/^[-._a-zA-Z0-9]+$/.test(key)) add(ctx, "error", "configmap.badKey", p.key, { key });
       }
   }
@@ -764,8 +782,8 @@ function semantic(ctx, obj) {
 function checkLabels(ctx, node, path, isLabel) {
   if (!isMap(node)) return;
   for (const p of node.items) {
-    if (!isScalar(p.key)) continue;
-    const key = String(p.key.value);
+    if (!isScalar(p.key) || isMerge(p.key)) continue;
+    const key = keyStr(p.key.value);
     if (isPh(key)) continue;
     const parts = key.split("/");
     let ok = parts.length <= 2;

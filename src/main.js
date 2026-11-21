@@ -21,7 +21,7 @@ const STRINGS = {
     "panel.scanning": "Checking {n} files…",
     "panel.scanDone": "{files} files with YAML, {bad} with problems",
     "panel.scanClean": "Every YAML in the vault looks fine.",
-    "panel.schema": "Kubernetes {k8s} schema, Gateway API {gateway}, MetalLB {metallb}. Works offline.",
+    "panel.schema": "Kubernetes {k8s} schema, Gateway API {gateway}, MetalLB {metallb}, cert-manager {certManager}, Prometheus Operator {prometheusOperator}, Argo CD {argocd}. Works offline.",
     "sum.ok": "No problems",
     "sum.errors": "{n} errors",
     "sum.error": "1 error",
@@ -73,7 +73,7 @@ const STRINGS = {
     "set.files": "Check .yaml / .yml files",
     "set.filesDesc": "Underline problems in YAML files opened with ecu-codekit, and include them in the panel.",
     "set.about": "About the checks",
-    "set.aboutDesc": "Uses the Kubernetes {k8s} API schema plus Gateway API and MetalLB, bundled in the plugin. Nothing is sent anywhere. Blocks with Helm or Jinja templates and values like <name> are skipped.",
+    "set.aboutDesc": "Uses the Kubernetes {k8s} API schema plus Gateway API, MetalLB, cert-manager, Prometheus Operator and Argo CD, bundled in the plugin. Nothing is sent anywhere. Blocks with Helm or Jinja templates and values like <name> are skipped.",
   },
   tr: {
     "panel.title": "Kubernetes kontrolü",
@@ -88,7 +88,7 @@ const STRINGS = {
     "panel.scanning": "{n} dosya kontrol ediliyor…",
     "panel.scanDone": "YAML içeren {files} dosya, {bad} tanesinde sorun var",
     "panel.scanClean": "Kasadaki tüm YAML'lar sorunsuz görünüyor.",
-    "panel.schema": "Kubernetes {k8s} şeması, Gateway API {gateway}, MetalLB {metallb}. İnternetsiz çalışır.",
+    "panel.schema": "Kubernetes {k8s} şeması, Gateway API {gateway}, MetalLB {metallb}, cert-manager {certManager}, Prometheus Operator {prometheusOperator}, Argo CD {argocd}. İnternetsiz çalışır.",
     "sum.ok": "Sorun yok",
     "sum.errors": "{n} hata",
     "sum.error": "1 hata",
@@ -140,7 +140,7 @@ const STRINGS = {
     "set.files": ".yaml / .yml dosyalarını kontrol et",
     "set.filesDesc": "ecu-codekit ile açılan YAML dosyalarında sorunların altını çiz ve onları panele dahil et.",
     "set.about": "Kontroller hakkında",
-    "set.aboutDesc": "Eklentiye gömülü Kubernetes {k8s} API şemasını, Gateway API ve MetalLB'yi kullanır. Hiçbir şey dışarı gönderilmez. Helm ya da Jinja şablonu içeren bloklar ve <ad> gibi yer tutucular atlanır.",
+    "set.aboutDesc": "Eklentiye gömülü Kubernetes {k8s} API şemasını, Gateway API, MetalLB, cert-manager, Prometheus Operator ve Argo CD'yi kullanır. Hiçbir şey dışarı gönderilmez. Helm ya da Jinja şablonu içeren bloklar ve <ad> gibi yer tutucular atlanır.",
   },
 };
 
@@ -609,7 +609,7 @@ export default class EcuKube extends Plugin {
           }
         if (s.summary && mode === "markdown" && b.closeLine >= 0 && b.closeLine + 1 <= state.doc.lines) {
           const end = state.doc.line(b.closeLine + 1).to;
-          const sig = uiLang + "|" + b.firstLine + "|" + JSON.stringify(b.res);
+          const sig = uiLang + "|" + b.firstLine + "|" + b.from + "|" + (b.starts ? b.starts.join(",") : "") + "|" + JSON.stringify(b.res);
           ranges.push(Decoration.widget({ widget: new SummaryWidget(plugin, b, sig), block: true, side: 1 }).range(end));
         }
       }

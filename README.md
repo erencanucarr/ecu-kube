@@ -56,8 +56,9 @@ are only reported.
   Under each `yaml` block a summary lists the objects (kind, name, replicas, image, ports,
   links) and the problems; click one to jump to its line.
 - **Reading view**: the same summary under each block.
-- **Side panel** (command "Open Kubernetes check panel" or the status bar item): every block
-  in the current note, plus **Check the whole vault**.
+- **Side panel** (command "Open Kubernetes check panel", the status bar item or the ribbon
+  icon, which you can hide in settings): every block in the current note, plus **Check the
+  whole vault**.
 - **`.yaml` / `.yml` files** opened with [ecu-codekit](https://github.com/erencanucarr/ecu-codekit)
   are underlined too.
 
