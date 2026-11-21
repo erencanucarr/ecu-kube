@@ -1,4 +1,38 @@
 export default [
+  ["yaml 1.1 dates and times are strings for kubectl", `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app
+  creationTimestamp: 2024-05-01T10:00:00Z
+data:
+  START_DATE: 2024-01-01
+  BACKUP_AT: 12:30`, []],
+  ["config files are not API objects", `apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: v1.30.0
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+---
+apiVersion: v1
+kind: Config
+clusters: []
+contexts: []
+---
+apiVersion: v2
+name: mychart
+version: 0.1.0
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [deploy.yaml]
+---
+apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+nodes: [{role: control-plane}]`, []],
+  ["known apiVersion without kind still errors", `apiVersion: apps/v1
+metadata: {name: x}`, ["obj.noKind@1"]],
   ["missing apiVersion (fixable)", `kind: Role
 metadata: {namespace: default, name: reader}
 rules:

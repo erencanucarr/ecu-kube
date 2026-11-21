@@ -1,7 +1,7 @@
 import { Plugin, ItemView, PluginSettingTab, Setting, MarkdownView, TFile, Notice, setIcon, debounce } from "obsidian";
 import * as obsidian from "obsidian";
 import { StateField, StateEffect, Compartment } from "@codemirror/state";
-import { EditorView, Decoration, WidgetType } from "@codemirror/view";
+import { EditorView, Decoration, WidgetType, ViewPlugin } from "@codemirror/view";
 import { validateMany, SCHEMA_INFO } from "./validate.js";
 import { formatIssue } from "./messages.js";
 import { extractBlocks, isYamlLang } from "./blocks.js";
@@ -194,7 +194,7 @@ function fixInView(cm, items) {
     new Notice(t("fix.stale"));
     return 0;
   }
-  cm.dispatch({ changes, userEvent: "input" });
+  cm.dispatch({ changes, effects: refreshEffect.of(null), userEvent: "input" });
   return changes.length;
 }
 
@@ -429,7 +429,28 @@ export default class EcuKube extends Plugin {
 
     this.mdField = this.makeField("markdown");
     this.yamlField = this.makeField("yaml");
-    this.registerEditorExtension(this.mdField);
+    this.recheck = ViewPlugin.fromClass(
+      class {
+        constructor(view) {
+          this.view = view;
+          this.timer = null;
+        }
+        update(u) {
+          if (!u.docChanged) return;
+          clearTimeout(this.timer);
+          this.timer = setTimeout(() => {
+            try {
+              this.view.dispatch({ effects: refreshEffect.of(null) });
+            } catch (e) {
+            }
+          }, 350);
+        }
+        destroy() {
+          clearTimeout(this.timer);
+        }
+      }
+    );
+    this.registerEditorExtension([this.mdField, this.recheck]);
 
     this.registerView(VIEW_PANEL, (leaf) => new KubePanel(leaf, this));
     this.registerMarkdownPostProcessor((el, ctx) => this.decorateReading(el, ctx));
@@ -510,7 +531,7 @@ export default class EcuKube extends Plugin {
     }
     r = validateMany(texts, { hints: this.settings.hints });
     this.cache.set(key, r);
-    if (this.cache.size > 200) this.cache.delete(this.cache.keys().next().value);
+    if (this.cache.size > 12) this.cache.delete(this.cache.keys().next().value);
     return r;
   }
 
@@ -558,7 +579,10 @@ export default class EcuKube extends Plugin {
     };
     return StateField.define({
       create: (state) => build(state),
-      update: (deco, tr) => (tr.docChanged || tr.effects.some((e) => e.is(refreshEffect)) ? build(tr.state) : deco),
+      update: (deco, tr) => {
+        if (tr.effects.some((e) => e.is(refreshEffect))) return build(tr.state);
+        return tr.docChanged ? deco.map(tr.changes) : deco;
+      },
       provide: (f) => EditorView.decorations.from(f),
     });
   }
@@ -804,7 +828,7 @@ export default class EcuKube extends Plugin {
       if (!ed || !ed.state || !v.file || !YAML_EXTS.has(v.file.extension)) continue;
       if (ed.state.field(this.yamlField, false) !== undefined) continue;
       try {
-        ed.dispatch({ effects: StateEffect.appendConfig.of(this.codeComp.of(this.yamlField)) });
+        ed.dispatch({ effects: StateEffect.appendConfig.of(this.codeComp.of([this.yamlField, this.recheck])) });
       } catch (e) {
         console.error("ecu-kube: could not attach to code view", e);
       }

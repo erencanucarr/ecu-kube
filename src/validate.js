@@ -58,6 +58,16 @@ const QTY = /^[+-]?(\d+(\.\d*)?|\.\d+)(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][
 const QTY_MUL = { n: 1e-9, u: 1e-6, m: 1e-3, k: 1e3, M: 1e6, G: 1e9, T: 1e12, P: 1e15, E: 1e18, Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4, Pi: 1024 ** 5, Ei: 1024 ** 6 };
 const YAML_CODES = new Set(["DUPLICATE_KEY", "TAB_AS_INDENT", "BAD_INDENT", "MISSING_CHAR", "MULTILINE_IMPLICIT_KEY", "BLOCK_AS_IMPLICIT_KEY", "UNEXPECTED_TOKEN", "BAD_SCALAR_START", "BAD_DQ_ESCAPE"]);
 
+function goYamlTags(tags) {
+  return tags.filter((t) => t.tag !== "tag:yaml.org,2002:timestamp" && t.format !== "TIME");
+}
+
+function knownApiVersion(apiVersion) {
+  if (!apiVersion) return false;
+  if (SCHEMA.kinds[apiVersion]) return true;
+  return REMOVED.some(([av]) => av === apiVersion);
+}
+
 function groupOf(apiVersion) {
   const i = apiVersion.indexOf("/");
   return i < 0 ? "" : apiVersion.slice(0, i);
@@ -186,7 +196,7 @@ function parseInto(ctx, text, lc) {
   const res = ctx.res;
   let docs = [];
   try {
-    docs = parseAllDocuments(text, { version: "1.1", lineCounter: lc, uniqueKeys: true, prettyErrors: false, merge: true });
+    docs = parseAllDocuments(text, { version: "1.1", lineCounter: lc, uniqueKeys: true, prettyErrors: false, merge: true, customTags: goYamlTags });
   } catch (e) {
     add(ctx, "error", "yaml.raw", [0, 0], { msg: String(e.message || e) });
   }
@@ -194,6 +204,7 @@ function parseInto(ctx, text, lc) {
   for (const doc of docs) {
     ctx.doc = doc;
     rootDoc = doc;
+    aliasBudget = 0;
     if (doc.errors.length) {
       for (const e of doc.errors.slice(0, 1)) {
         const [from, to] = e.pos || [0, 0];
@@ -218,6 +229,11 @@ function parseInto(ctx, text, lc) {
       continue;
     }
     const kind = str(get(root, "kind"));
+    const av = str(get(root, "apiVersion"));
+    if ((!kind && !knownApiVersion(av)) || (av === "v1" && kind === "Config")) {
+      res.docs.push({ generic: true, from: doc.range[0], to: doc.range[2] });
+      continue;
+    }
     const items = get(root, "items");
     if (/List$/.test(kind || "") && isSeq(items)) {
       for (const it of items.items) if (isMap(res1(it))) processObject(ctx, res1(it));
@@ -303,8 +319,10 @@ function b64(str) {
   }
 }
 
+let aliasBudget = 0;
 function res1(node) {
   if (isAlias(node) && rootDoc) {
+    if (++aliasBudget > 1000) return null;
     try {
       return node.resolve(rootDoc);
     } catch (e) {
@@ -511,6 +529,7 @@ function checkPrim(ctx, node, p, path, keyN) {
     case "i":
     case "n":
       if (typeof v === "number" && (p === "n" || Number.isInteger(v))) return true;
+      if (p === "i" && typeof v === "string" && /^0o[0-7]+$/.test(v)) return true;
       if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) setFix(ctx, add(ctx, "error", "type.unquote", node, { path, value: v, expected: typeName(p) }), node.range[0], node.range[1], v);
       else typeErr(ctx, node, typeName(p), path, keyN);
       return false;
@@ -558,7 +577,7 @@ function semantic(ctx, obj) {
 
   if (builtin || obj.custom) {
     const nameN = get(meta, "name");
-    if (!nameN && !get(meta, "generateName")) add(ctx, "error", "meta.noName", keyNode(m, "metadata") || keyNode(m, "kind") || [m.range[0], m.range[0] + 1]);
+    if (!nameN && !get(meta, "generateName") && (builtin || meta)) add(ctx, "error", "meta.noName", keyNode(m, "metadata") || keyNode(m, "kind") || [m.range[0], m.range[0] + 1]);
     const name = str(nameN);
     if (name && !isPh(name) && builtin && group !== "rbac.authorization.k8s.io") {
       const rule = obj.kind === "Service" ? "dns1035" : obj.kind === "Namespace" ? "label" : "subdomain";
@@ -892,7 +911,7 @@ function crossChecks(ctx) {
   const seen = new Map();
   for (const o of objs) {
     if (!o.kind || !o.name) continue;
-    const key = `${groupOf(o.apiVersion || "")}|${o.kind}|${o.namespace || ""}|${o.name}`;
+    const key = `${o.part}|${groupOf(o.apiVersion || "")}|${o.kind}|${o.namespace || ""}|${o.name}`;
     if (seen.has(key)) {
       ctx.cur = o;
       rootDoc = o.doc;
@@ -925,7 +944,8 @@ function crossChecks(ctx) {
     const ns = s.namespace || "";
     const matched = workloads.filter((w) => (w.o.namespace || "") === ns && labelsMatch(sel, w.labels));
     if (!matched.length) {
-      add(ctx, "warning", "service.noMatch", s.selectorNode, { sel: Object.entries(sel).map(([k, v]) => `${k}=${v}`).join(", ") });
+      if (workloads.some((w) => w.o.part === s.part))
+        add(ctx, "warning", "service.noMatch", s.selectorNode, { sel: Object.entries(sel).map(([k, v]) => `${k}=${v}`).join(", ") });
     } else {
       for (const w of matched) {
         s.links.push({ rel: "selects", kind: w.o.kind, name: w.o.name, id: w.o.id });
@@ -962,7 +982,7 @@ function crossChecks(ctx) {
       if (!n || isPh(n)) continue;
       const svc = services.find((s) => s.name === n && (s.namespace || "") === (ing.namespace || ""));
       if (!svc) {
-        if (services.length) add(ctx, "warning", "ingress.noService", nN, { name: n });
+        if (services.some((sv) => sv.part === ing.part)) add(ctx, "warning", "ingress.noService", nN, { name: n });
         continue;
       }
       if (!ing.links.some((l) => l.id === svc.id)) {

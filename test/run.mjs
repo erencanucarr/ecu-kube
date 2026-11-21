@@ -39,5 +39,20 @@ for (const c of cases) {
     for (const i of r.issues) console.log("     ", formatIssue(i, "en"));
   } else console.log(`ok   ${c.name}`);
 }
+const many = [
+  ["before/after blocks are not duplicates", ["apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {a: '1'}", "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c}\ndata: {a: '2'}"], [[], []]],
+  ["service in another block: no noMatch warning", ["apiVersion: v1\nkind: Service\nmetadata: {name: s}\nspec:\n  selector: {app: a}\n  ports: [{port: 80}]", "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: d}\nspec:\n  selector: {matchLabels: {app: b}}\n  template:\n    metadata: {labels: {app: b}}\n    spec: {containers: [{name: c, image: 'n:1', resources: {}}]}"], [[], []]],
+  ["service in the same block still warns", ["apiVersion: v1\nkind: Service\nmetadata: {name: s}\nspec:\n  selector: {app: a}\n  ports: [{port: 80}]\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata: {name: d}\nspec:\n  selector: {matchLabels: {app: b}}\n  template:\n    metadata: {labels: {app: b}}\n    spec: {containers: [{name: c, image: 'n:1', resources: {}}]}"], [["service.noMatch@5"]]],
+  ["links still cross blocks", ["apiVersion: v1\nkind: Service\nmetadata: {name: s}\nspec:\n  selector: {app: a}\n  ports: [{port: 80}]", "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: d}\nspec:\n  selector: {matchLabels: {app: a}}\n  template:\n    metadata: {labels: {app: a}}\n    spec: {containers: [{name: c, image: 'n:1', resources: {}}]}"], [[], []], (r) => r[0].docs[0].links.length === 1],
+];
+for (const [name, texts, want, extra] of many) {
+  const r = validateMany(texts);
+  const got = r.map((x) => x.issues.map((i) => `${i.code}@${i.line}`));
+  const ok = JSON.stringify(got) === JSON.stringify(want) && (!extra || extra(r));
+  if (!ok) {
+    fail++;
+    console.log(`FAIL ${name}\n  want ${JSON.stringify(want)}\n  got  ${JSON.stringify(got)}`);
+  } else console.log(`ok   ${name}`);
+}
 console.log(fail ? `${fail} failed` : "all passed");
 process.exit(fail ? 1 : 0);
