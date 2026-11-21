@@ -1,7 +1,7 @@
 {
   "id": "ecu-kube",
   "name": "ecu-kube",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.5.0",
   "description": "Checks YAML and Kubernetes manifests in your notes as you write: typos, wrong types, removed APIs and labels that don't match.",
   "author": "Eren Can Ucar",

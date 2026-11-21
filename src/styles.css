@@ -1,19 +1,17 @@
 .ek-u {
-  text-decoration-line: underline;
-  text-decoration-style: wavy;
-  text-decoration-skip-ink: none;
-  text-underline-offset: 3px;
-  text-decoration-thickness: 1px;
-}
-.ek-u-error {
-  text-decoration-color: var(--color-red);
+  --ek-u: var(--color-red);
+  padding-bottom: 2px;
+  background-image: linear-gradient(45deg, transparent 65%, var(--ek-u) 65%, var(--ek-u) 85%, transparent 85%),
+    linear-gradient(-45deg, transparent 65%, var(--ek-u) 65%, var(--ek-u) 85%, transparent 85%);
+  background-size: 6px 3px;
+  background-repeat: repeat-x;
+  background-position: left bottom;
 }
 .ek-u-warning {
-  text-decoration-color: var(--color-orange);
+  --ek-u: var(--color-orange);
 }
 .ek-u-hint {
-  text-decoration-color: var(--color-blue);
-  text-decoration-style: dotted;
+  --ek-u: var(--color-blue);
 }
 .cm-line.ek-l-error {
   box-shadow: inset 3px 0 0 rgba(var(--color-red-rgb), 0.7);
@@ -104,7 +102,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  column-gap: 7px;
+  gap: 0 7px;
 }
 .ek-obj-kind {
   font-weight: var(--font-semibold);
@@ -202,7 +200,7 @@
 }
 .ek-panel .ek-obj {
   flex-direction: column;
-  row-gap: 0;
+  gap: 0;
 }
 .ek-panel .ek-sum-head {
   flex-wrap: wrap;
