@@ -4,7 +4,7 @@ Checks the YAML and Kubernetes manifests in your notes while you write them. Typ
 types, removed APIs and labels that don't line up are underlined in place, and each block
 gets a short summary of what it defines.
 
-![A Deployment with problems underlined and fix buttons, and the check panel on the right](docs/editor.png)
+![Problems underlined, then fixed with one click](docs/fix.gif)
 
 ## What it catches
 
@@ -38,6 +38,8 @@ When the right value is clear, the problem comes with a **Fix** button: `replica
 `replicas`, `always` → `Always`, `yes` → `"yes"`, `256mb` → `256Mi`, a removed `apiVersion` →
 the current one, a missing `apiVersion`, a Job's `restartPolicy`, a 6-field cron schedule,
 Secret data → base64, tabs → spaces. **Fix all** applies every fix in a block at once.
+
+![A Deployment with problems underlined and fix buttons, and the check panel on the right](docs/editor.png)
 
 Fixes work from the block summary, the side panel and reading view. In the editor you can
 also right-click an underlined value, or give **Fix the problem at the cursor** and **Fix
