@@ -1,4 +1,25 @@
 export default [
+  ["missing apiVersion (fixable)", `kind: Role
+metadata: {namespace: default, name: reader}
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]`, ["obj.noApiVersion@1"]],
+  ["tabs", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n\tname: c", ["yaml.TAB_AS_INDENT@4"]],
+  ["cluster scoped namespace", `apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+  namespace: default`, ["meta.clusterScoped@5"]],
+  ["unquote + job Always", `apiVersion: batch/v1
+kind: Job
+metadata: {name: j}
+spec:
+  backoffLimit: "4"
+  template:
+    spec:
+      restartPolicy: Always
+      containers: [{name: j, image: "busybox:1.36", resources: {}}]`, ["type.unquote@5", "job.restartPolicy@8"]],
   ["clean deployment + service", `apiVersion: apps/v1
 kind: Deployment
 metadata:

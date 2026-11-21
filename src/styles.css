@@ -257,3 +257,24 @@
   width: 13px;
   height: 13px;
 }
+
+.ek-fix {
+  margin-left: 8px;
+  padding: 0 7px;
+  height: 20px;
+  font-size: var(--font-ui-smaller);
+  line-height: 18px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--interactive-normal);
+  box-shadow: none;
+  color: var(--text-accent);
+  cursor: pointer;
+  vertical-align: baseline;
+}
+.ek-fix:hover {
+  background: var(--interactive-hover);
+}
+.ek-fix-all {
+  margin-left: 0;
+}

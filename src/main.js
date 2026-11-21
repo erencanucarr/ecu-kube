@@ -1,10 +1,11 @@
-import { Plugin, ItemView, PluginSettingTab, Setting, MarkdownView, TFile, setIcon, debounce } from "obsidian";
+import { Plugin, ItemView, PluginSettingTab, Setting, MarkdownView, TFile, Notice, setIcon, debounce } from "obsidian";
 import * as obsidian from "obsidian";
 import { StateField, StateEffect, Compartment } from "@codemirror/state";
 import { EditorView, Decoration, WidgetType } from "@codemirror/view";
 import { validateMany, SCHEMA_INFO } from "./validate.js";
 import { formatIssue } from "./messages.js";
 import { extractBlocks, isYamlLang } from "./blocks.js";
+import { applyFixes, fixable } from "./fixes.js";
 
 const STRINGS = {
   en: {
@@ -45,6 +46,17 @@ const STRINGS = {
     "cmd.panel": "Open Kubernetes check panel",
     "cmd.scan": "Check all YAML in the vault",
     "cmd.hints": "Toggle best-practice hints",
+    "cmd.fixHere": "Fix the problem at the cursor",
+    "cmd.fixAll": "Fix everything fixable in this file",
+    "fix.apply": "Fix: {label}",
+    "fix.insert": "Add {label}",
+    "fix.removeLine": "Remove the line",
+    "fix.tabs": "Tabs to spaces",
+    "fix.base64": "Encode as base64",
+    "fix.all": "Fix all ({n})",
+    "fix.stale": "The text changed since the check; try again.",
+    "fix.none": "Nothing to fix here.",
+    "fix.done": "Applied {n} fixes.",
     "set.lang": "Language",
     "set.langDesc": "Language of the interface and messages.",
     "set.langAuto": "Same as the app",
@@ -99,6 +111,17 @@ const STRINGS = {
     "cmd.panel": "Kubernetes kontrol panelini aç",
     "cmd.scan": "Kasadaki tüm YAML'ları kontrol et",
     "cmd.hints": "En iyi uygulama önerilerini aç/kapat",
+    "cmd.fixHere": "İmleçteki sorunu düzelt",
+    "cmd.fixAll": "Bu dosyadaki düzeltilebilir her şeyi düzelt",
+    "fix.apply": "Düzelt: {label}",
+    "fix.insert": "Ekle: {label}",
+    "fix.removeLine": "Satırı sil",
+    "fix.tabs": "Tab'ları boşluğa çevir",
+    "fix.base64": "base64'e çevir",
+    "fix.all": "Tümünü düzelt ({n})",
+    "fix.stale": "Kontrolden sonra metin değişmiş; tekrar dene.",
+    "fix.none": "Burada düzeltilecek bir şey yok.",
+    "fix.done": "{n} düzeltme uygulandı.",
     "set.lang": "Dil",
     "set.langDesc": "Arayüzün ve mesajların dili.",
     "set.langAuto": "Uygulamayla aynı",
@@ -145,6 +168,35 @@ const LEVEL_ICON = { error: "circle-x", warning: "triangle-alert", hint: "lightb
 const REVERSE = new Set(["exposedBy", "routedBy", "scaledBy"]);
 
 const refreshEffect = StateEffect.define();
+
+function fixLabel(fix) {
+  if (fix.kind === "delete") return t("fix.removeLine");
+  if (fix.kind === "tabs") return t("fix.tabs");
+  if (fix.kind === "base64") return t("fix.base64");
+  if (fix.kind === "insert") return t("fix.insert", { label: fix.label });
+  const label = fix.label.length > 40 ? fix.label.slice(0, 39) + "…" : fix.label;
+  return t("fix.apply", { label });
+}
+
+function fixInView(cm, items) {
+  const sorted = items.slice().sort((a, b) => a.base + a.fix.from - (b.base + b.fix.from) || a.fix.to - b.fix.to);
+  const changes = [];
+  let last = -1;
+  for (const { base, fix } of sorted) {
+    const from = base + fix.from;
+    const to = base + fix.to;
+    if (from < last || to > cm.state.doc.length) continue;
+    if (cm.state.sliceDoc(from, to) !== fix.expect) continue;
+    changes.push({ from, to, insert: fix.insert });
+    last = Math.max(to, from + 1);
+  }
+  if (!changes.length) {
+    new Notice(t("fix.stale"));
+    return 0;
+  }
+  cm.dispatch({ changes, userEvent: "input" });
+  return changes.length;
+}
 
 function plural(n, one, many) {
   return n === 1 ? t(one) : t(many, { n });
@@ -198,8 +250,10 @@ class SummaryWidget extends WidgetType {
     const el = document.createElement("div");
     el.className = "ek-widget";
     el.setAttribute("contenteditable", "false");
+    const base = this.block.from;
     this.plugin.renderSummary(el, this.block.res, {
       lineOffset: this.block.firstLine,
+      onFix: (fixes) => fixInView(view, fixes.map((fix) => ({ base, fix }))),
       onJump: (issue) => {
         const pos = Math.min(this.block.from + issue.from, view.state.doc.length);
         view.dispatch({ selection: { anchor: pos }, scrollIntoView: true });
@@ -273,6 +327,7 @@ class KubePanel extends ItemView {
       this.plugin.renderSummary(box, b.res, {
         lineOffset: b.firstLine,
         expand: true,
+        onFix: (fixes) => this.plugin.fixInTarget(target, mode, b, fixes),
         onJump: (issue) => this.plugin.jumpTo(target, b.firstLine + issue.line - 1, issue.col - 1),
       });
     }
@@ -401,6 +456,20 @@ export default class EcuKube extends Plugin {
         await this.saveSettings();
       },
     });
+    this.addCommand({ id: "fix-at-cursor", name: t("cmd.fixHere"), editorCallback: (editor) => this.fixAtCursor(editor) });
+    this.addCommand({ id: "fix-all", name: t("cmd.fixAll"), editorCallback: (editor) => this.fixAllInEditor(editor) });
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor) => {
+        const hit = this.issueAtCursor(editor);
+        if (!hit) return;
+        menu.addItem((item) =>
+          item
+            .setTitle(fixLabel(hit.issue.fix))
+            .setIcon("wand")
+            .onClick(() => fixInView(editor.cm, [{ base: hit.block.from, fix: hit.issue.fix }]))
+        );
+      })
+    );
     this.addSettingTab(new KubeSettings(this.app, this));
 
     this.refreshSoon = debounce(() => this.refreshSide(), 400, true);
@@ -517,6 +586,19 @@ export default class EcuKube extends Plugin {
     if (c.warning) counts.createSpan({ cls: "ek-warning", text: plural(c.warning, "sum.warning", "sum.warnings") });
     if (c.hint) counts.createSpan({ cls: "ek-hint", text: plural(c.hint, "sum.hint", "sum.hints") });
     if (!res.issues.length) return box;
+    const stop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const fixes = fixable(res.issues);
+    if (opts.onFix && fixes.length > 1) {
+      const all = counts.createEl("button", { cls: "ek-fix ek-fix-all", text: t("fix.all", { n: fixes.length }) });
+      all.addEventListener("mousedown", stop);
+      all.addEventListener("click", (e) => {
+        stop(e);
+        opts.onFix(fixes.map((i) => i.fix));
+      });
+    }
 
     const list = box.createDiv({ cls: "ek-issues" });
     const collapsed = !opts.expand && !c.error && !c.warning;
@@ -533,7 +615,15 @@ export default class EcuKube extends Plugin {
       const row = list.createDiv({ cls: `ek-issue ek-issue-${i.level}` });
       const ic = row.createSpan({ cls: `ek-issue-icon ek-${i.level}`, attr: { "aria-label": t("level." + i.level) } });
       setIcon(ic, LEVEL_ICON[i.level]);
-      row.createSpan({ cls: "ek-issue-msg", text: formatIssue(i, uiLang) });
+      const msg = row.createSpan({ cls: "ek-issue-msg", text: formatIssue(i, uiLang) });
+      if (i.fix && opts.onFix) {
+        const b = msg.createEl("button", { cls: "ek-fix", text: fixLabel(i.fix) });
+        b.addEventListener("mousedown", stop);
+        b.addEventListener("click", (e) => {
+          stop(e);
+          opts.onFix([i.fix]);
+        });
+      }
       const lineNo = opts.lineOffset != null ? opts.lineOffset + i.line : i.line;
       row.createSpan({ cls: "ek-issue-line", text: t("sum.line", { n: lineNo }) });
       if (opts.onJump) {
@@ -579,10 +669,74 @@ export default class EcuKube extends Plugin {
         if (!worthShowing(res)) continue;
         const box = document.createElement("div");
         box.className = "ek-reading";
-        this.renderSummary(box, res, { lineOffset: hit ? hit.firstLine : base });
+        this.renderSummary(box, res, {
+          lineOffset: hit ? hit.firstLine : base,
+          onFix: file instanceof TFile ? (fixes) => this.fixInFile(file, "markdown", text, fixes) : null,
+        });
         pre.insertAdjacentElement("afterend", box);
       }
     });
+  }
+
+  issueAtCursor(editor) {
+    const cm = editor && editor.cm;
+    if (!cm || !this.settings.underline) return null;
+    const pos = cm.state.selection.main.head;
+    for (const block of this.analyze(cm.state.doc.toString(), "markdown", false)) {
+      if (pos < block.from || pos > block.from + block.text.length) continue;
+      const issue = block.res.issues.find((i) => i.fix && i.fix.kind !== "tabs" && pos >= block.from + i.from && pos <= block.from + i.to);
+      if (issue) return { block, issue };
+      const tabs = block.res.issues.find((i) => i.fix && i.fix.kind === "tabs");
+      if (tabs) return { block, issue: tabs };
+    }
+    return null;
+  }
+
+  fixAtCursor(editor) {
+    const hit = this.issueAtCursor(editor);
+    if (!hit) return new Notice(t("fix.none"));
+    fixInView(editor.cm, [{ base: hit.block.from, fix: hit.issue.fix }]);
+  }
+
+  fixAllInEditor(editor) {
+    const cm = editor && editor.cm;
+    if (!cm) return;
+    const items = [];
+    for (const b of this.analyze(cm.state.doc.toString(), "markdown", false)) for (const i of fixable(b.res.issues)) items.push({ base: b.from, fix: i.fix });
+    if (!items.length) return new Notice(t("fix.none"));
+    const n = fixInView(cm, items);
+    if (n) new Notice(t("fix.done", { n }));
+  }
+
+  editorViewOf(target) {
+    const v = target && target.view;
+    if (v instanceof MarkdownView && v.getMode && v.getMode() === "source" && v.editor && v.editor.cm) return v.editor.cm;
+    if (v && v.editor && v.editor.state && v.editor.dispatch) return v.editor;
+    return null;
+  }
+
+  fixInTarget(target, mode, block, fixes) {
+    const cm = this.editorViewOf(target);
+    if (cm) return fixInView(cm, fixes.map((fix) => ({ base: block.from, fix })));
+    return this.fixInFile(target.file, mode, block.text, fixes);
+  }
+
+  async fixInFile(file, mode, blockText, fixes) {
+    let applied = 0;
+    await this.app.vault.process(file, (data) => {
+      let base = 0;
+      if (mode === "markdown") {
+        const b = extractBlocks(data).find((x) => x.text === blockText);
+        if (!b) return data;
+        base = b.from;
+      } else if (data !== blockText) return data;
+      const slice = data.slice(base, base + blockText.length);
+      const r = applyFixes(slice, fixes);
+      applied = r.applied;
+      return data.slice(0, base) + r.text + data.slice(base + blockText.length);
+    });
+    if (!applied) new Notice(t("fix.stale"));
+    return applied;
   }
 
   targetFile() {

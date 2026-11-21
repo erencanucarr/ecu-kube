@@ -147,13 +147,14 @@ export function validate(text, opts = {}) {
 }
 
 export function validateMany(texts, opts = {}) {
-  const ctx = { hints: opts.hints !== false, objects: [], doc: null, results: [], res: null, cur: null };
+  const ctx = { hints: opts.hints !== false, objects: [], doc: null, results: [], res: null, cur: null, raws: [] };
   const counters = [];
   texts.forEach((raw, part) => {
     const res = { docs: [], issues: [], skipped: null };
     ctx.results.push(res);
     ctx.res = res;
     ctx.part = part;
+    ctx.raws.push(raw);
     const lc = new LineCounter();
     counters.push(lc);
     if (/\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/.test(raw)) {
@@ -200,7 +201,12 @@ function parseInto(ctx, text, lc) {
         const vars = { msg: String(e.message).split("\n")[0].replace(/ at line \d+, column \d+.*$/, "") };
         if (e.code === "DUPLICATE_KEY") vars.key = dupKey(doc, from, to, text);
         if (doc.errors.length > 1 && !doc.errors.every((x) => x.code === "DUPLICATE_KEY")) vars.more = doc.errors.length - 1;
-        add(ctx, "error", code, [from, Math.max(to, from + 1)], vars);
+        const issue = add(ctx, "error", code, [from, Math.max(to, from + 1)], vars);
+        if (e.code === "TAB_AS_INDENT") {
+          const raw = rawOf(ctx);
+          const fixed = raw.replace(/^[\t ]+/gm, (m) => m.replace(/\t/g, "  "));
+          if (fixed !== raw) setFix(ctx, issue, 0, raw.length, fixed, "", "tabs");
+        }
       }
       res.docs.push({ broken: true, from: doc.range[0], to: doc.range[2] });
       continue;
@@ -250,7 +256,51 @@ function add(ctx, level, code, at, vars = {}) {
   else if (at && at.range) [from, to] = [at.range[0], at.range[1]];
   if (to <= from) to = from + 1;
   const res = ctx.cur ? ctx.results[ctx.cur.part] : ctx.res;
-  res.issues.push({ level, code, vars, from, to, obj: ctx.cur ? ctx.cur.id : null });
+  const issue = { level, code, vars, from, to, obj: ctx.cur ? ctx.cur.id : null };
+  res.issues.push(issue);
+  return issue;
+}
+
+function rawOf(ctx) {
+  return ctx.raws[ctx.cur ? ctx.cur.part : ctx.part];
+}
+
+function setFix(ctx, issue, from, to, insert, label, kind) {
+  const raw = rawOf(ctx);
+  if (!issue || raw == null || from < 0 || to > raw.length || to < from) return issue;
+  issue.fix = { from, to, insert, label: label == null ? insert : label, kind: kind || "replace", expect: raw.slice(from, to) };
+  return issue;
+}
+
+function scalarText(node, value) {
+  if (node.type === "QUOTE_DOUBLE") return JSON.stringify(String(value));
+  if (node.type === "QUOTE_SINGLE") return "'" + String(value).replace(/'/g, "''") + "'";
+  return String(value);
+}
+
+function replaceScalar(ctx, issue, node, value, label) {
+  if (!issue || !node || !node.range) return issue;
+  return setFix(ctx, issue, node.range[0], node.range[1], scalarText(node, value), label == null ? String(value) : label);
+}
+
+function insertBefore(ctx, issue, keyN, text) {
+  const raw = rawOf(ctx);
+  if (!issue || !keyN || !keyN.range || raw == null) return issue;
+  const at = keyN.range[0];
+  const lineStart = raw.lastIndexOf("\n", at - 1) + 1;
+  if (!/^\s*(-\s+)*$/.test(raw.slice(lineStart, at))) return issue;
+  const col = at - lineStart;
+  return setFix(ctx, issue, at, at, text + "\n" + " ".repeat(col), text, "insert");
+}
+
+function b64(str) {
+  try {
+    let bin = "";
+    for (const b of new TextEncoder().encode(str)) bin += String.fromCharCode(b);
+    return btoa(bin);
+  } catch (e) {
+    return null;
+  }
 }
 
 function res1(node) {
@@ -330,7 +380,8 @@ function processObject(ctx, map) {
   if (!kind && !isPh(apiVersion)) add(ctx, "error", "obj.noKind", map.items[0] ? map.items[0].key : [map.range[0], map.range[0] + 1]);
   if (!apiVersion && !isPh(kind)) {
     const cands = kind ? KIND_INDEX.get(kind) : null;
-    add(ctx, "error", "obj.noApiVersion", kindN || [map.range[0], map.range[0] + 1], { suggest: cands ? cands[0] : "" });
+    const issue = add(ctx, "error", "obj.noApiVersion", kindN || [map.range[0], map.range[0] + 1], { suggest: cands ? cands[0] : "" });
+    if (cands && cands.length === 1 && map.items[0]) insertBefore(ctx, issue, map.items[0].key, `apiVersion: ${cands[0]}`);
     if (cands && cands.length === 1) apiVersion = cands[0];
   }
   if (!kind || !apiVersion) return finishObject(ctx, obj);
@@ -345,18 +396,21 @@ function processObject(ctx, map) {
     const others = KIND_INDEX.get(kind);
     const group = groupOf(apiVersion);
     if (removed) {
-      add(ctx, "error", removed.use ? "api.removed" : "api.removedNoReplace", avN || kindN, { apiVersion, kind, ver: removed.ver, use: removed.use });
+      const issue = add(ctx, "error", removed.use ? "api.removed" : "api.removedNoReplace", avN || kindN, { apiVersion, kind, ver: removed.ver, use: removed.use });
+      if (removed.use && avN) replaceScalar(ctx, issue, avN, removed.use);
     } else if (others && !/alpha|beta/.test(apiVersion)) {
-      add(ctx, "error", "api.wrongVersion", avN || kindN, { apiVersion, kind, use: others.join(", ") });
+      const issue = add(ctx, "error", "api.wrongVersion", avN || kindN, { apiVersion, kind, use: others.join(", ") });
+      if (others.length === 1 && avN) replaceScalar(ctx, issue, avN, others[0]);
     } else if (BUILTIN_GROUPS.has(group) && /alpha|beta/.test(apiVersion)) {
       add(ctx, "hint", "api.beta", avN, { apiVersion });
     } else if (SCHEMA.kinds[apiVersion] || BUILTIN_GROUPS.has(group)) {
       const near = closest(kind, ALL_KINDS);
-      add(ctx, "error", near ? "kind.typo" : "kind.unknown", kindN, { kind, apiVersion, suggest: near || "" });
+      const issue = add(ctx, "error", near ? "kind.typo" : "kind.unknown", kindN, { kind, apiVersion, suggest: near || "" });
+      if (near) replaceScalar(ctx, issue, kindN, near);
     } else {
       const near = closest(kind, ALL_KINDS);
       if (near && near !== kind && lev(near.toLowerCase(), kind.toLowerCase()) <= 1 && KIND_INDEX.get(near).includes(apiVersion))
-        add(ctx, "error", "kind.typo", kindN, { kind, apiVersion, suggest: near });
+        replaceScalar(ctx, add(ctx, "error", "kind.typo", kindN, { kind, apiVersion, suggest: near }), kindN, near);
       else obj.custom = true;
     }
     obj.unchecked = true;
@@ -385,7 +439,8 @@ function walk(ctx, node, ref, path, keyN, top) {
     if (!checkPrim(ctx, node, s.t, path, keyN)) return;
     if (s.e && !s.e.includes(node.value) && !isPh(node.value)) {
       const near = closest(String(node.value), s.e.filter(Boolean));
-      add(ctx, "error", near ? "enum.typo" : "enum.bad", node, { path, value: String(node.value), suggest: near || "", options: s.e.filter(Boolean).join(", ") });
+      const issue = add(ctx, "error", near ? "enum.typo" : "enum.bad", node, { path, value: String(node.value), suggest: near || "", options: s.e.filter(Boolean).join(", ") });
+      if (near) replaceScalar(ctx, issue, node, near);
     }
     return;
   }
@@ -408,7 +463,8 @@ function walk(ctx, node, ref, path, keyN, top) {
         if (s.u) continue;
         const near = closest(k, Object.keys(s.p));
         if (near) typoFor.add(near);
-        add(ctx, "error", near ? "field.typo" : "field.unknown", pair.key, { path: joinPath(path, k), field: k, suggest: near || "", parent: path || "(root)" });
+        const issue = add(ctx, "error", near ? "field.typo" : "field.unknown", pair.key, { path: joinPath(path, k), field: k, suggest: near || "", parent: path || "(root)" });
+        if (near) replaceScalar(ctx, issue, pair.key, near);
         continue;
       }
       walk(ctx, pair.value, sub, joinPath(path, k), pair.key, false);
@@ -448,19 +504,19 @@ function checkPrim(ctx, node, p, path, keyN) {
   switch (p) {
     case "s":
       if (typeof v !== "string") {
-        add(ctx, "error", "type.quote", node, { path, value: src, got: kindOfNode(node) });
+        setFix(ctx, add(ctx, "error", "type.quote", node, { path, value: src, got: kindOfNode(node) }), node.range[0], node.range[1], JSON.stringify(src));
         return false;
       }
       return true;
     case "i":
     case "n":
       if (typeof v === "number" && (p === "n" || Number.isInteger(v))) return true;
-      if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) add(ctx, "error", "type.unquote", node, { path, value: v, expected: typeName(p) });
+      if (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v)) setFix(ctx, add(ctx, "error", "type.unquote", node, { path, value: v, expected: typeName(p) }), node.range[0], node.range[1], v);
       else typeErr(ctx, node, typeName(p), path, keyN);
       return false;
     case "b":
       if (typeof v === "boolean") return true;
-      if (typeof v === "string" && /^(true|false)$/i.test(v)) add(ctx, "error", "type.unquote", node, { path, value: v, expected: "boolean" });
+      if (typeof v === "string" && /^(true|false)$/i.test(v)) setFix(ctx, add(ctx, "error", "type.unquote", node, { path, value: v, expected: "boolean" }), node.range[0], node.range[1], v.toLowerCase());
       else typeErr(ctx, node, "boolean", path, keyN);
       return false;
     case "is":
@@ -472,7 +528,8 @@ function checkPrim(ctx, node, p, path, keyN) {
       if (typeof v === "string" && QTY.test(v)) return true;
       if (typeof v === "string") {
         const fix = quantityFix(v);
-        add(ctx, "error", fix ? "qty.fix" : "qty.bad", node, { path, value: v, suggest: fix || "" });
+        const issue = add(ctx, "error", fix ? "qty.fix" : "qty.bad", node, { path, value: v, suggest: fix || "" });
+        if (fix) replaceScalar(ctx, issue, node, fix);
       } else typeErr(ctx, node, "quantity", path, keyN);
       return false;
   }
@@ -510,13 +567,24 @@ function semantic(ctx, obj) {
         let fix = name.toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
         if (rule !== "subdomain") fix = fix.replace(/\./g, "-");
         if (rule === "dns1035") fix = fix.replace(/^[0-9-]+/, "");
-        add(ctx, "error", "meta.badName." + rule, nameN, { name, suggest: fix && fix !== name ? fix : "" });
+        const issue = add(ctx, "error", "meta.badName." + rule, nameN, { name, suggest: fix && fix !== name ? fix : "" });
+        if (fix && fix !== name) replaceScalar(ctx, issue, nameN, fix);
       }
     }
     const nsN = get(meta, "namespace");
     const ns = str(nsN);
     if (ns && !isPh(ns) && !(DNS_LABEL.test(ns) && ns.length <= 63)) add(ctx, "error", "meta.badNamespace", nsN, { ns });
-    if (ns && obj.clusterScoped) add(ctx, "warning", "meta.clusterScoped", keyNode(meta, "namespace"), { kind: obj.kind });
+    if (ns && obj.clusterScoped) {
+      const kN = keyNode(meta, "namespace");
+      const issue = add(ctx, "warning", "meta.clusterScoped", kN, { kind: obj.kind });
+      const raw = rawOf(ctx);
+      if (kN && raw != null) {
+        const start = raw.lastIndexOf("\n", kN.range[0] - 1) + 1;
+        let end = raw.indexOf("\n", kN.range[0]);
+        end = end < 0 ? raw.length : end + 1;
+        if (/^\s*namespace\s*:/.test(raw.slice(start, end))) setFix(ctx, issue, start, end, "", "", "delete");
+      }
+    }
     checkLabels(ctx, get(meta, "labels"), "metadata.labels", true);
     checkLabels(ctx, get(meta, "annotations"), "metadata.annotations", false);
   }
@@ -559,7 +627,11 @@ function semantic(ctx, obj) {
         const v = res1(p.value);
         if (!isScalar(v) || typeof v.value !== "string" || isPh(v.value)) continue;
         const s = v.value.replace(/\s+/g, "");
-        if (s && (!/^[A-Za-z0-9+/]*={0,2}$/.test(s) || s.length % 4 !== 0)) add(ctx, "error", "secret.base64", v, { key: String(p.key.value) });
+        if (s && (!/^[A-Za-z0-9+/]*={0,2}$/.test(s) || s.length % 4 !== 0)) {
+          const enc = b64(v.value);
+          const issue = add(ctx, "error", "secret.base64", v, { key: String(p.key.value) });
+          if (enc) setFix(ctx, issue, v.range[0], v.range[1], enc, "", "base64");
+        }
       }
     f.keys = (isMap(data) ? data.items.length : 0) + (isMap(get(m, "stringData")) ? get(m, "stringData").items.length : 0);
   }
@@ -578,12 +650,19 @@ function semantic(ctx, obj) {
     f.schedule = sch;
     if (sch && !isPh(sch)) {
       const err = cronError(sch);
-      if (err) add(ctx, "error", err, schN, { value: sch });
+      if (err) {
+        const issue = add(ctx, "error", err, schN, { value: sch });
+        if (err === "cron.seconds") replaceScalar(ctx, issue, schN, sch.trim().split(/\s+/).slice(1).join(" "));
+      }
     }
   }
   if (k === "Job" || k === "CronJob") {
     const rp = ps && ps.spec ? str(get(ps.spec, "restartPolicy")) : null;
-    if (ps && ps.spec && (!rp || rp === "Always")) add(ctx, "error", "job.restartPolicy", keyNode(ps.spec, "restartPolicy") || keyNode(ps.spec, "containers") || ps.spec, {});
+    if (ps && ps.spec && (!rp || rp === "Always")) {
+      const issue = add(ctx, "error", "job.restartPolicy", keyNode(ps.spec, "restartPolicy") || keyNode(ps.spec, "containers") || ps.spec, {});
+      if (rp) replaceScalar(ctx, issue, get(ps.spec, "restartPolicy"), "OnFailure");
+      else if (isMap(ps.spec) && ps.spec.items[0]) insertBefore(ctx, issue, ps.spec.items[0].key, "restartPolicy: OnFailure");
+    }
   }
   if (k === "PersistentVolumeClaim") {
     const st = dig(spec, "resources", "requests", "storage");
@@ -764,7 +843,7 @@ function checkResources(ctx, c, cname, isMain) {
       const vN = get(mapN, res);
       const v = str(vN);
       if (!v || isPh(v)) continue;
-      if (res === "memory" && /^\d+(\.\d+)?m$/.test(v)) add(ctx, "warning", "qty.memoryMilli", vN, { value: v, suggest: v.replace(/m$/, "Mi") });
+      if (res === "memory" && /^\d+(\.\d+)?m$/.test(v)) replaceScalar(ctx, add(ctx, "warning", "qty.memoryMilli", vN, { value: v, suggest: v.replace(/m$/, "Mi") }), vN, v.replace(/m$/, "Mi"));
       if (res === "cpu" && /[KMGTPE]i$/.test(v)) add(ctx, "warning", "qty.cpuBinary", vN, { value: v });
     }
     const rq = parseQuantity(js(get(req, res)));

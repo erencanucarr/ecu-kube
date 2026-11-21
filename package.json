@@ -1,6 +1,6 @@
 {
   "name": "ecu-kube",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "description": "Checks YAML and Kubernetes manifests in your notes as you write them.",
   "license": "MIT",
@@ -8,7 +8,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "schema": "node scripts/gen-schema.mjs",
-    "test": "node test/run.mjs"
+    "test": "node test/run.mjs && node test/fixes.mjs"
   },
   "devDependencies": {
     "esbuild": "0.25.10",
